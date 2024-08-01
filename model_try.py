@@ -175,10 +175,32 @@ class Segmentation_of_PLIC():
         self.optimizer_cor = optim.Adam(self.segmentation_net_cor.parameters(), lr=self.learning_rate)
         self.optimizer_sag = optim.Adam(self.segmentation_net_sag.parameters(), lr=self.learning_rate)
 
-
+    def tversky(self, tp, fn, fp):
+        loss2 = 1- ((torch.sum(tp)+0.000001)/((torch.sum(tp) + self.gamma*torch.sum(fn) + self.delta*torch.sum(fp)+0.000001)))
+        return loss2
 
            
+    def dice_loss(self, segmentation_mask, output):        
+        weights = torch.stack([torch.tensor(1-self.weight), torch.tensor(self.weight)]).to(self.device)
+        output = torch.stack([output, 1-output], axis=-1)
+        segmentation_mask = torch.stack([segmentation_mask, 1-segmentation_mask], axis=-1)
 
+       # weights = 1-torch.tensor(self.weight)
+        output = torch.clip(output, min = 1e-6)
+        loss1 = -torch.sum(segmentation_mask * torch.log(output)* weights,axis = -1)
+        loss1 = torch.mean(loss1)
+        '''tversky preperation'''
+        y_true_f = torch.flatten(segmentation_mask[:,:,:,:])
+        y_pred_f = torch.flatten(output[:,:,:,:])
+        fp = (1-y_true_f)*y_pred_f
+        fn = (1-y_pred_f)*y_true_f
+        tp = y_pred_f*y_true_f
+
+        loss = (self.alpha*loss1) + (1-self.alpha)*(self.tversky(tp,fn,fp))
+        #loss = self.tversky(tp,fn,fp
+        del(tp, fp, fn, y_true_f, y_pred_f)
+        gc.collect()
+        return loss
 
 
 
@@ -208,9 +230,53 @@ for epoch in range(1):
                 plt.imshow(inputs[40][0].detach().cpu(), cmap='gray')
                 plt.subplot(1,2,2)
                 plt.imshow(mask[40][0].detach().cpu(), cmap='gray')
-                plt.savefig(newpath + '/'+ "data" + ".png")
-                plt.close()
+                plt.show()
+                #plt.savefig(newpath + '/'+ "data" + ".png")
+                #plt.close()
         Segmenter.optimizer.zero_grad()
         Segmenter.optimizer_cor.zero_grad()
         Segmenter.optimizer_sag.zero_grad()
+        
+        output = F.sigmoid(Segmenter.segmentation_net(inputs))
+        loss = Segmenter.dice_loss(mask, output)
+        
+        output_cor = F.sigmoid(Segmenter.segmentation_net_cor(inputs_cor))
+        loss_cor = Segmenter.dice_loss(mask_cor, output_cor)
+        
+        output_sag = F.sigmoid(Segmenter.segmentation_net_sag(inputs_sag))
+        loss_sag = Segmenter.dice_loss(mask_sag, output_sag)
 
+
+        loss.backward()
+        Segmenter.optimizer.step()
+
+        loss_cor.backward()
+        Segmenter.optimizer_cor.step()
+        
+        loss_sag.backwawrd()
+        Segmenter.optimizer_sag.step()
+        
+        
+                
+        with torch.no_grad():
+        
+            Segmenter.segmentation_net.train()
+            Segmenter.segmentation_net_cor.train()
+            Segmenter.segmentation_net_sag.train()
+
+            for batch, data in enumerate(Segmenter.test_dataloader):
+        
+                ### read in the T1-cubes of size (1, number slices, 64,64)
+                inputs = batch['data_patch'].float().squeeze().unsqueeze(1).to(device)
+                mask = batch['mask_patch'].squeeze().unsqueeze(1).to(device)
+                T1 = batch["data"].squeeze()
+                inputs_sag = batch['data_patch_sag'].float().squeeze().unsqueeze(1).to(device)
+                inputs_cor = batch['data_patch_cor'].float().squeeze().unsqueeze(1).to(device)
+                mask_sag = batch['mask_patch_sag'].float().squeeze().unsqueeze(1).to(device)
+                mask_cor = batch['mask_patch_cor'].float().squeeze().unsqueeze(1).to(device)
+
+                output = F.sigmoid(Segmenter.segmentation_net(inputs))
+                
+                output_cor = F.sigmoid(Segmenter.segmentation_net_cor(inputs_cor))
+                
+                output_sag = F.sigmoid(Segmenter.segmentation_net_sag(inputs_sag))
